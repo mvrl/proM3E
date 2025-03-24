@@ -1,2 +1,2 @@
 # proM3E
-Probabilistic Masked Multimodal Model
+Probabilistic Masked Multimodal Embedding Model
