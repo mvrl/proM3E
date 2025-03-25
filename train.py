@@ -115,15 +115,15 @@ class M3ETrainingModule(pl.LightningModule):
                                     )
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer=self.optim,
-            T_0=10,
+            T_0=20,
             eta_min=1e-6
         )
         return [self.optim], [self.scheduler]   
 
 if __name__ == '__main__':
-    data_path = 'embeds/embeds_train_final.npy'
-    data_path_val = 'embeds/embeds_val.npy'
-    data_path_inat = 'embeds/embeds_inat.npy'
+    data_path = '../embeds/embeds_train_final.npy'
+    data_path_val = '../embeds/embeds_val.npy'
+    data_path_inat = '../embeds/embeds_inat.npy'
 
     train_dataset = M3EDataset(data_path, data_path_inat, batch_size=1024, split='train')
     val_dataset = M3EDataset(data_path_val, data_path_inat, batch_size=1024, split='val')
@@ -137,7 +137,7 @@ if __name__ == '__main__':
     checkpoint = ModelCheckpoint(
         monitor='val_loss',
         dirpath='checkpoints',
-        filename='m3e-prob-decoder-{epoch:02d}-{val_loss:.2f}',
+        filename='m3e-prob-{epoch:02d}-{val_loss:.2f}',
         save_last=True,
         mode='min'
     )
