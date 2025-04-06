@@ -1,9 +1,10 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from einops import repeat
+from einops import repeat, rearrange
 import warnings
-from vit import Transformer, FeedForward
+from linear_vit import Transformer, FeedForward
+import numpy as np
 
 
 def create_pairwise_mask(labels):
@@ -11,18 +12,27 @@ def create_pairwise_mask(labels):
     pairwise_mask = torch.zeros(num_samples, num_samples).to(labels.device)
 
     for i in range(num_samples):
-        pairwise_mask[i, :] = (labels == labels[i])
+        pairwise_mask[i, :] = torch.all(labels == labels[i], dim=-1)
 
     return pairwise_mask
 
-def clip_loss(similarity: torch.Tensor, label) -> torch.Tensor:
-    overhead_img_loss = contrastive_loss(similarity, label)
-    ground_img_loss = contrastive_loss(similarity.t(), label.t())
-    return 0.5*torch.mean(torch.sum(overhead_img_loss, dim=-1)) + 0.5*torch.mean(torch.sum(ground_img_loss, dim=-1))
+def mse_contrastive_loss(pred_embeds, gt_embeds, label):
+    """
+    pred_embeds: [num_modalities, batch_size, embed_dim]
+    gt_embeds: [num_modalities, batch_size, embed_dim]
+    label: [batch_size, embed_dim]
+    """
+    dist = torch.cdist(pred_embeds, gt_embeds)
+    dist = -5 * dist + 5
+    gt = repeat(create_pairwise_mask(label), 'b m -> n b m', n=pred_embeds.shape[0])
+    # dist2 = torch.cdist(pred_embeds, pred_embeds)
+    # dist2 = -5 * dist2 + 5
+    # loss = F.binary_cross_entropy_with_logits(dist, gt)
+    # import code; code.interact(local=dict(globals(), **locals()))
+    loss = (-torch.log(dist.softmax(dim=-1)+1e-6)*gt).sum(-1).mean(-1).mean()
+    # loss2 = (-torch.log(dist2.softmax(dim=-1)+1e-6)*gt).sum(-1).mean(-1).mean()
+    return loss
 
-def contrastive_loss(logits: torch.Tensor, label) -> torch.Tensor:
-    gt = create_pairwise_mask(label)
-    return -gt*torch.log(logits.softmax(-1)+1e-6)
 
 class M3E(nn.Module):
     def __init__(
@@ -43,187 +53,74 @@ class M3E(nn.Module):
     ):
         super().__init__()
 
-        self.contrastive_loss = contrastive_loss
-
-        self.dim = dim
-
-        self.input_projection = input_projection
-
-        self.projectors = nn.ModuleList([nn.Linear(input_projection, dim) for _ in range(6)])
-        
-        self.modality_identifiers = nn.ParameterList([nn.Parameter(torch.randn(dim)) for _ in range(6)])
-
+        # self.linear = nn.Linear(input_projection, input_projection)
+        self.projector = nn.ModuleList([nn.Linear(input_projection, dim) for _ in range(5)])
+        self.modality_identifier = nn.ParameterList([nn.Parameter(torch.randn(dim)) for _ in range(5)])
         self.register_tokens = nn.Parameter(torch.randn(2, dim))
+        self.enc = nn.MultiheadAttention(dim, 8, batch_first=True)
+        self.cls = nn.Parameter(torch.randn(dim))
+        # self.cls.requires_grad = False
+        self.linear = nn.ModuleList([nn.Linear(dim, input_projection) for _ in range(5)])
 
-        # extract some hyperparameters and functions from encoder (vision transformer to be trained)
-
-        self.num_modalities = 6
-        self.num_register_tokens = 2
-
-        self.encoder = Transformer(dim=dim, depth=depth, heads=heads, dim_head=dim_head, mlp_dim=mlp_dim)
-        num_patches = self.num_modalities + self.num_register_tokens
-        
-        # self.mask_token = nn.Parameter(torch.randn(decoder_dim))
-
-        #self.enc_to_dec = nn.Linear(encoder_dim, decoder_dim) if dim != decoder_dim else nn.Identity()
-        self.decoder_projections = nn.ModuleList([FeedForward(decoder_dim, decoder_dim) for _ in range(6)])
-
-        # self.decoder = Transformer(dim = decoder_dim, depth = decoder_depth, heads = decoder_heads, dim_head = decoder_dim_head, mlp_dim = decoder_dim * 4)
-
-        self.to_embeddings = nn.ModuleList([nn.Linear(dim, input_projection) for _ in range(6)])
+        self.dim=dim
 
     def forward(self, modalities, audio_flag=0):
         device = modalities.device
 
-        # get patches
-
-        batch, num_patches, *_ = modalities.shape
-
-        tokens = torch.zeros(batch, num_patches, self.dim, device = device)
-        modality_tokens = modalities
-
-        # calculate of patches needed to be masked, and get random indices, dividing it up for mask vs unmasked
-
+        pred = torch.zeros((modalities.shape[0], 5, modalities.shape[-1]), device=device)
         if torch.rand(1) < 0.9:
-            num_masked = 5
-        else:
             num_masked = 4
-
-        if audio_flag:
-            rand_indices = torch.rand(batch, num_patches, device = device).argsort(dim = -1)
-            masked_indices, unmasked_indices = rand_indices[:, :num_masked], rand_indices[:, num_masked:]
         else:
-            rand_indices = torch.rand(batch, num_patches-1, device = device).argsort(dim = -1)
-            masked_indices, unmasked_indices = torch.cat((rand_indices[:, :(num_masked-1)], torch.ones(batch, 1, device=device, dtype=torch.long)*5), dim=-1), rand_indices[:, (num_masked-1):]
-
-        # mask the tokens
-
-        batch_range = torch.arange(batch, device = device)[:, None]
-        # tokens[batch_range, masked_indices] = self.mask_token
-
-        # learning to discard information
-
-        # if num_masked == 5:
-        if torch.rand(1) < 0.1:
-            rand_indices = torch.randint(0, masked_indices.shape[1], (batch,), device = device)
-            mask = torch.ones_like(masked_indices).scatter_(1, rand_indices.unsqueeze(1), 0.)
-            
-            masked_indi = masked_indices[(1-mask).bool()].reshape(batch, -1)
-
-            modality_tokens[batch_range, masked_indi] = torch.nn.functional.normalize(torch.randn(batch, 1, self.input_projection, device = device), dim=-1)
+            num_masked = 3
         
-            masked_indices = masked_indices[mask.bool()].reshape(batch, -1)
+        idx = np.random.choice([0, 1, 2, 3, 4], 5-num_masked, replace=False)
+        x = torch.zeros((modalities.shape[0], 5-num_masked, self.dim), device=device)
+        for i, ids in enumerate(idx):
+            x[:, i] = self.projector[ids](modalities[:, ids]) + self.modality_identifier[ids]
 
-            # add the rand indices to the unmasked indices
-            unmasked_indices = torch.cat((unmasked_indices, masked_indi), dim=-1)
+        #x = self.projector[idx](modalities[:, idx])
+        cls_token = repeat(self.cls, 'd -> b d', b=modalities.shape[0]).unsqueeze(1)
+        register_tokens = repeat(self.register_tokens, 'n d -> b n d', b=modalities.shape[0])
+        x = torch.cat((register_tokens, x), dim=1)
+
+        x = self.enc(cls_token, x, x)[0][:, 0]
         
-        for i, projector in enumerate(self.projectors):
-            tokens[:, i] = projector(modality_tokens[:, i])
-
-        # add modality identifiers
-        for i, modality_identifier in enumerate(self.modality_identifiers):
-            tokens[:, i] += modality_identifier
-
-        tokens = tokens[batch_range, unmasked_indices]
-
-        # add register tokens
-        register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = batch)
-        tokens = torch.cat((register_tokens, tokens), dim = 1)
-
-        # attend with vision transformer
-
-        encoded_tokens = self.encoder(tokens)
-
-        mu = torch.nn.functional.normalize(encoded_tokens[:, 0], dim=-1)
-        logvar = encoded_tokens[:, 1]
-
-        sample = mu + torch.exp(logvar/2) * torch.randn_like(logvar)
-
-        sample = repeat(sample, 'b d -> b n d', n=6)
-
-        # project encoder to decoder dimensions, if they are not equal - the paper says you can get away with a smaller dimension for decoder
-
-        # decoder_tokens = self.enc_to_dec(sample)
-
-        # concat the masked tokens to the decoder tokens and attend with decoder
-
-        # for i, modality_identifier in enumerate(self.modality_identifiers):
-        #     decoder_tokens[:, i] += modality_identifier
+        for i, layer in enumerate(self.linear):
+            pred[:, i] = layer(x)
         
-        decoder_tokens = torch.zeros(batch, num_patches, self.dim, device = device)
+        pred = torch.nn.functional.normalize(pred, dim=-1)
 
-        for i, decoder_projection in enumerate(self.decoder_projections):
-            decoder_tokens[:, i] = decoder_projection(sample[:, i])
-        
-        # for i, modality_identifier in enumerate(self.modality_identifiers):
-        #     decoder_tokens[:, i] += modality_identifier
+        # return F.mse_loss(pred, modalities[:, :5])
+        loss = 0
+        for i in range(5):
+            dist = torch.cdist(pred[:, i], modalities[:, i])
+            dist = -5 * dist + 5
+            loss += (-torch.log(dist.softmax(-1) + 1e-6) * torch.eye(dist.shape[0], device=device)).sum(-1).mean()
+        return loss / 5
 
-        # decoded_tokens = self.decoder(decoder_tokens)
-
-        # # splice out the mask tokens and project to pixel values
-        # #modality_tokens = decoded_tokens[:, self.num_register_tokens:]
-        # modality_tokens = decoded_tokens
-
-        modality_tokens = decoder_tokens
-
-        pred_embeddings = torch.zeros(batch, self.num_modalities, self.input_projection, device = device)
-        for i, to_embedding in enumerate(self.to_embeddings):
-            pred_embeddings[:, i] = to_embedding(modality_tokens[:, i])
-        pred_embeddings = torch.nn.functional.normalize(pred_embeddings, dim=-1)
-
-        # calculate reconstruction loss
-        if audio_flag:
-            if not self.contrastive_loss:
-                recon_loss = F.mse_loss(pred_embeddings[batch_range, masked_indices], modalities[batch_range, masked_indices], reduction='sum') / (masked_indices.shape[1]*batch)
-            else:
-                similarity = torch.einsum('bnd,jnd->nbj', pred_embddings[batch_range, masked_indices], modalities[batch_range, masked_indices])
-                recon_loss = clip_loss(similarity, modalities[:, 4])
-            kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
-            if kl_loss > 10000:
-            # XXX prevent loss exploration
-            warnings.warn(f'Detected a VIB loss explosion ({kl_loss=} > 10000). Ignore the VIB loss for stability.')
-            kl_loss = 0
-            # print(recon_loss, kl_loss)
-            return recon_loss + 0.0001 * kl_loss
-            
-        else:
-            if not self.contrastive_loss:
-                recon_loss = F.mse_loss(pred_embeddings[:, :-1][batch_range, masked_indices[:, :-1]], modalities[:, :-1][batch_range, masked_indices[:, :-1]], reduction='sum') / ((masked_indices.shape[1]-1)*batch)
-            else:
-                similarity = torch.einsum('bnd,jnd->nbj', pred_embeddings[:, :-1][batch_range, masked_indices[:, :-1]], modalities[:, :-1][batch_range, masked_indices[:, :-1]])
-                recon_loss = clip_loss(similarity, modalities[:, 4])
-            kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
-            if kl_loss > 10000:
-                # XXX prevent loss exploration
-                warnings.warn(f'Detected a VIB loss explosion ({kl_loss=} > 10000). Ignore the VIB loss for stability.')
-                kl_loss = 0
-            # print(recon_loss, kl_loss)
-            return recon_loss + 0.0001 * kl_loss
     
     def forward_inference(self, modalities, modality_mask):
         device = modalities.device
-        batch, num_patches, *_ = modalities.shape
-        tokens = torch.zeros(batch, num_patches, self.dim, device = device)
-        for i, projector in enumerate(self.projectors):
-            tokens[:, i] = projector(modalities[:, i])
+
+        pred = torch.zeros((modalities.shape[0], 5, modalities.shape[-1]), device=device)
         
-        # add modality identifiers
-        batch_range = torch.arange(batch, device = device)[:, None]
-        # modality_mask = repeat(modality_mask, 'n -> b n', b = batch)
+        # idx = np.random.choice([0, 1, 2, 3, 4], 5-num_masked, replace=False)
+        idx = [0, 1]
+        x = torch.zeros((modalities.shape[0], 2, self.dim), device=device)
+        for i, ids in enumerate(idx):
+            x[:, i] = self.projector[ids](modalities[:, ids]) + self.modality_identifier[ids]
 
-        # tokens[batch_range, modality_mask] = self.mask_token
+        #x = self.projector[idx](modalities[:, idx])
+        cls_token = repeat(self.cls, 'd -> b d', b=modalities.shape[0]).unsqueeze(1)
+        register_tokens = repeat(self.register_tokens, 'n d -> b n d', b=modalities.shape[0])
+        x = torch.cat((register_tokens, x), dim=1)
 
-        for i, modality_identifier in enumerate(self.modality_identifiers):
-            tokens[:, i] += modality_identifier
+        x = self.enc(cls_token, x, x)[0][:, 0]
         
-        tokens = tokens[batch_range, modality_mask]
-        
-        register_tokens = repeat(self.register_tokens, 'n d -> b n d', b = batch)
-        tokens = torch.cat((register_tokens, tokens), dim = 1)
+        for i, layer in enumerate(self.linear):
+            pred[:, i] = layer(x)
 
-        encoded_tokens = self.encoder(tokens)[:, :2]
-
-        return encoded_tokens
+        return torch.nn.functional.normalize(pred, dim=-1)
     
     def forward_decode(self, modalities, modality_mask, n_samples=1):
         device = modalities.device
@@ -248,13 +145,13 @@ class M3E(nn.Module):
 
         encoded_tokens = self.encoder(tokens)
 
-        mu = encoded_tokens[:, 0]
+        mu = torch.nn.functional.normalize(encoded_tokens[:, 0], dim=-1)
         logvar = encoded_tokens[:, 1]
 
         output_samples = torch.zeros(batch, n_samples, self.num_modalities, self.input_projection, device = device)
 
         for j in range(n_samples):
-            sample = mu + torch.exp(logvar/2) * torch.randn_like(logvar)
+            sample = mu + torch.einsum('bd,b->bd',torch.exp(logvar/2), torch.randn(batch, device = device))
 
             sample = repeat(sample, 'b d -> b n d', n=6)
 
