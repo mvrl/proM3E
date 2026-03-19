@@ -1,87 +1,126 @@
 import numpy as np
-from torch.utils.data import Dataset
 import torch
+from torch.utils.data import Dataset
+from typing import Tuple
 
-class M3EDataset(Dataset):
-    def __init__(self, data_path, data_path_inat, batch_size=1024, split='train'):
-        self.data = np.load(data_path, allow_pickle=True)
-        self.data_inat = np.load(data_path_inat, allow_pickle=True)
-        self.embeds_taxabind = np.stack((np.array(self.data[()]['image']),
-                                np.array(self.data[()]['sat']),
-                                np.array(self.data[()]['loc']),
-                                np.array(self.data[()]['env']),
-                                np.array(self.data[()]['text']),
-                                np.array(self.data[()]['sound'])), axis=1)
-
-        self.embeds_inat = np.stack((np.array(self.data_inat[()]['image']),
-                                np.array(self.data_inat[()]['sat']),
-                                np.array(self.data_inat[()]['loc']),
-                                np.array(self.data_inat[()]['env']),
-                                np.array(self.data_inat[()]['text']),
-                                np.zeros(np.array(self.data_inat[()]['image']).shape)), axis=1)
-        if split=='train':
-            self.embeds_inat = self.embeds_inat[:80000]
-        else:
-            self.embeds_inat = self.embeds_inat[80000:]
+class ProM3EDataset(Dataset):
+    """
+    Multimodal Dataset for ProM3E.
+    
+    This dataset handles loading and sampling from two different feature sets:
+    1. Taxabind: Comprehensive set with all 6 modalities unmasked (including audio).
+    2. iNat: Set where modality 5 (audio) is typically unavailable/zeroed.
+    
+    The dataset is designed to return batches of samples to simplify the training loop 
+    when dealing with datasets of varying modality presence.
+    
+    Modalities:
+    [0: Image, 1: Sat, 2: Loc, 3: Env, 4: Text, 5: Audio]
+    """
+    def __init__(
+        self, 
+        taxabind_path: str, 
+        inat_path: str, 
+        batch_size: int = 1024, 
+        split: str = 'train',
+        inat_split_size: int = 80000
+    ):
+        super().__init__()
         
+        # Load raw data
+        try:
+            taxabind_data = np.load(taxabind_path, allow_pickle=True)
+            inat_data = np.load(inat_path, allow_pickle=True)
+        except Exception as e:
+            print(f"Error loading datasets: {e}")
+            raise
+
+        # Helper to extract and stack from dict-like archive
+        def stack_modalities(data, has_audio=True):
+            data_dict = data[()] if isinstance(data, np.ndarray) and data.dtype == object else data
+            
+            image = np.array(data_dict['image'])
+            sat = np.array(data_dict['sat'])
+            loc = np.array(data_dict['loc'])
+            env = np.array(data_dict['env'])
+            text = np.array(data_dict['text'])
+            
+            if has_audio:
+                audio = np.array(data_dict['sound'])
+            else:
+                audio = np.zeros_like(image)
+                
+            return np.stack((image, sat, loc, env, text, audio), axis=1)
+
+        self.taxabind_embeds = stack_modalities(taxabind_data, has_audio=True)
+        self.inat_embeds = stack_modalities(inat_data, has_audio=False)
+        
+        # Train/Val Split for iNat (Taxabind is typically smaller/pre-defined)
+        if split == 'train':
+            self.inat_embeds = self.inat_embeds[:inat_split_size]
+        else:
+            self.inat_embeds = self.inat_embeds[inat_split_size:]
+            
         self.batch_size = batch_size
+        print(f"ProM3E Dataset initialized (split: {split})")
+        print(f"  - Taxabind samples: {len(self.taxabind_embeds)}")
+        print(f"  - iNat samples:     {len(self.inat_embeds)}")
 
-    def __len__(self):
-        return (len(self.embeds_taxabind)+len(self.embeds_inat))//self.batch_size
+    def __len__(self) -> int:
+        # Total number of batches per epoch
+        return (len(self.taxabind_embeds) + len(self.inat_embeds)) // self.batch_size
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        """
+        Samples a full batch of modalities.
+        Returns:
+            - batch_tensor: torch.Tensor [batch_size, 6, embed_dim]
+            - audio_flag: int (1 if Taxabind, 0 if iNat)
+        """
+        # Alternate between the two datasets randomly
         if torch.rand(1) < 0.5:
-            list_ids = np.random.choice(len(self.embeds_taxabind), self.batch_size, replace=False)
-            return torch.nn.functional.normalize(torch.from_numpy(self.embeds_taxabind[list_ids]), dim=-1), 1
+            indices = np.random.choice(len(self.taxabind_embeds), self.batch_size, replace=False)
+            batch = self.taxabind_embeds[indices]
+            audio_flag = 1
         else:
-            list_ids = np.random.choice(len(self.embeds_inat), self.batch_size, replace=False)
-            return torch.nn.functional.normalize(torch.from_numpy(self.embeds_inat[list_ids]), dim=-1), 0
-
-class M3EDatasetV1(Dataset):
-    def __init__(self, data_path, data_path_inat, batch_size=1024, split='train'):
-        self.data = np.load(data_path, allow_pickle=True)
-        self.data_inat = np.load(data_path_inat, allow_pickle=True)
-        self.embeds_taxabind = np.stack((np.array(self.data[()]['image']),
-                                np.array(self.data[()]['sat']),
-                                np.array(self.data[()]['loc']),
-                                np.array(self.data[()]['env']),
-                                np.array(self.data[()]['text']),
-                                np.array(self.data[()]['sound'])), axis=1)
-
-        self.embeds_inat = np.stack((np.array(self.data_inat[()]['image']),
-                                np.array(self.data_inat[()]['sat']),
-                                np.array(self.data_inat[()]['loc']),
-                                np.array(self.data_inat[()]['env']),
-                                np.array(self.data_inat[()]['text']),
-                                np.zeros(np.array(self.data_inat[()]['image']).shape)), axis=1)
-        if split=='train':
-            self.embeds_inat = self.embeds_inat[:80000]
-        else:
-            self.embeds_inat = self.embeds_inat[80000:]
+            indices = np.random.choice(len(self.inat_embeds), self.batch_size, replace=False)
+            batch = self.inat_embeds[indices]
+            audio_flag = 0
+            
+        # Float32 and normalized
+        batch_tensor = torch.from_numpy(batch).float()
+        batch_tensor = torch.nn.functional.normalize(batch_tensor, dim=-1)
         
-        self.batch_size = batch_size
+        return batch_tensor, audio_flag
 
+class ProM3EInferenceDataset(Dataset):
+    """Generic dataset for running inference over a set of embeddings."""
+    def __init__(self, data_path: str):
+        data = np.load(data_path, allow_pickle=True)
+        data_dict = data[()]
+        self.embeds = np.stack((
+            np.array(data_dict['image']),
+            np.array(data_dict['sat']),
+            np.array(data_dict['loc']),
+            np.array(data_dict['env']),
+            np.array(data_dict['text']),
+            np.array(data_dict['sound'])
+        ), axis=1)
+        
     def __len__(self):
-        return (len(self.embeds_taxabind)+len(self.embeds_inat))//self.batch_size
-
+        return len(self.embeds)
+        
     def __getitem__(self, idx):
-        list_ids = np.random.choice(len(self.embeds_taxabind), self.batch_size, replace=False)
-        return torch.nn.functional.normalize(torch.from_numpy(self.embeds_taxabind[list_ids]), dim=-1), 1
+        # Single item, normalized
+        tensor = torch.from_numpy(self.embeds[idx]).float()
+        return torch.nn.functional.normalize(tensor, dim=-1)
 
-class M3EDatasetInference(Dataset):
-    def __init__(self, data_path):
-        self.data = np.load(data_path, allow_pickle=True)
-        self.embeds_taxabind = np.stack((np.array(self.data[()]['image']),
-                                np.array(self.data[()]['sat']),
-                                np.array(self.data[()]['loc']),
-                                np.array(self.data[()]['env']),
-                                np.array(self.data[()]['text']),
-                                np.array(self.data[()]['sound'])), axis=1)
-    def __len__(self):
-        return len(self.embeds_taxabind)
-    def __getitem__(self, idx):
-        return torch.nn.functional.normalize(torch.from_numpy(self.embeds_taxabind[idx]), dim=-1)
-
-if __name__=='__main__':
-    dataset = M3EDataset('embeds/embeds_test.npy', 'embeds/embeds_inat.npy', batch_size=1024, split='test')
-    print(len(dataset))
+if __name__ == "__main__":
+    # Test script for local verification
+    print("Testing ProM3E Dataset...")
+    # Requires dummy files to be present, otherwise will catch error
+    try:
+        ds = ProM3EDataset('dummy_taxabind.npy', 'dummy_inat.npy', batch_size=32)
+        print(f"Successfully created dataset of length {len(ds)}")
+    except:
+        print("Dataset initialization skipped (files not found in local path).")

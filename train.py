@@ -1,153 +1,172 @@
-import open_clip
 import pytorch_lightning as pl
 import torch
-import torch.nn as nn
-import numpy as np
 from torch.utils.data import DataLoader
-from transformers import CLIPVisionModelWithProjection
-from dataset import M3EDataset
-from model import M3E
-from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
+import argparse
+import os
 
-class M3ETrainingModule(pl.LightningModule):
-    def __init__(self, train_dataset, val_dataset, **kwargs):
-        super().__init__()
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
+from model import ProM3E
+from dataset import ProM3EDataset
 
-        self.model = M3E(input_projection=512,
-                        dim=1024,
-                        depth=6,
-                        heads=8,
-                        dim_head=64,
-                        mlp_dim=2048,
-                        decoder_dim=1024,
-                        decoder_depth=4,
-                        decoder_heads=8,
-                        decoder_dim_head=64)
-                
-        self.batch_size = kwargs.get('batch_size', 1)
-        self.lr = kwargs.get('lr', 1e-4)
-
-        # self.image_embeds = torch.nn.functional.normalize(torch.from_numpy(np.load('img_embeds.npy')), dim=-1)
-        # self.sat_embeds = torch.nn.functional.normalize(torch.from_numpy(np.load('sat_embeds.npy')), dim=-1)
-        # self.loc_embeds = torch.nn.functional.normalize(torch.from_numpy(np.load('loc_embeds.npy')), dim=-1)
-        # self.env_embeds = torch.nn.functional.normalize(torch.from_numpy(np.load('env_embeds.npy')), dim=-1)
-        # self.audio_embeds = torch.nn.functional.normalize(torch.from_numpy(np.load('audio_embeds_v2.npy')), dim=-1)
-        # self.text_embeds = torch.nn.functional.normalize(torch.from_numpy(np.load('text_embeds.npy')), dim=-1)
-
-        # self.mods = torch.stack((self.image_embeds, self.sat_embeds, self.loc_embeds, self.env_embeds, torch.zeros_like(self.sat_embeds), self.audio_embeds), dim=1)
-        # self.mods_text = torch.stack((torch.zeros_like(self.text_embeds), torch.zeros_like(self.text_embeds), torch.zeros_like(self.text_embeds), torch.zeros_like(self.text_embeds), self.text_embeds, torch.zeros_like(self.text_embeds)), dim=1)
-        # self.classes = torch.from_numpy(np.load('sp_classes.npy'))
+class ProM3ETrainingModule(pl.LightningModule):
+    """
+    PyTorch Lightning Wrapper for the ProM3E Model.
     
-
-    def forward(self, modalities, audio_flag=0):
-        loss = self.model(modalities.float(), audio_flag)
-        return loss
+    This module manages the training and validation loops, optimization,
+    and loss logging for the Probabilistic Multi-Modal Masked Embedding model.
+    """
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.save_hyperparameters()
+        
+        # Initialize the underlying architecture
+        self.model = ProM3E(
+            input_dim=self.hparams.input_dim,
+            embed_dim=self.hparams.embed_dim,
+            depth=self.hparams.depth,
+            heads=self.hparams.heads,
+            mlp_dim=self.hparams.mlp_dim,
+            num_modalities=self.hparams.num_modalities,
+            num_register_tokens=self.hparams.num_register_tokens,
+            num_cls_tokens=self.hparams.num_cls_tokens,
+            masked_only=self.hparams.masked_only,
+            dropout=self.hparams.dropout
+        )
+        
+        self.lr = self.hparams.lr
 
     def training_step(self, batch, batch_idx):
-        loss = self(batch[0][0], batch[1])
-        self.log('train_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True, batch_size=self.batch_size)
+        # Unpack batch. Note: DataLoader batch_size=1 since Dataset returns full batches.
+        modalities, audio_flag = batch
+        # [batch_size, 6, dim], [batch_size]
+        loss = self.model(modalities[0], audio_flag[0])
+        
+        self.log('train_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True)
         return loss
-    
+
     def validation_step(self, batch, batch_idx):
-        loss = self(batch[0][0], batch[1])
-        self.log('val_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True, batch_size=self.batch_size)
+        modalities, audio_flag = batch
+        loss = self.model(modalities[0], audio_flag[0])
+        
+        self.log('val_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True)
         return loss
-    
-    # def on_validation_epoch_end(self):
-    #     classes = self.classes.to(self.device)
-
-    #     image_embeds = self.model.forward_inference(self.mods.to(self.device), torch.LongTensor([1, 2, 3, 4, 5]))
-    #     sat_embeds = self.model.forward_inference(self.mods.to(self.device), torch.LongTensor([0, 2, 3, 4, 5]))
-    #     loc_embeds = self.model.forward_inference(self.mods.to(self.device), torch.LongTensor([0, 1, 3, 4, 5]))
-    #     env_embeds = self.model.forward_inference(self.mods.to(self.device), torch.LongTensor([0, 1, 2, 4, 5]))
-    #     text_embeds = self.model.forward_inference(self.mods_text.to(self.device), torch.LongTensor([0, 1, 2, 3, 5]))
-    #     audio_embeds = self.model.forward_inference(self.mods.to(self.device), torch.LongTensor([0, 1, 2, 3, 4]))
-
-    #     image_embeds = torch.nn.functional.normalize(image_embeds, dim=-1).reshape(image_embeds.shape[0], -1)
-    #     sat_embeds = torch.nn.functional.normalize(sat_embeds, dim=-1).reshape(sat_embeds.shape[0], -1)
-    #     loc_embeds = torch.nn.functional.normalize(loc_embeds, dim=-1).reshape(loc_embeds.shape[0], -1)
-    #     env_embeds = torch.nn.functional.normalize(env_embeds, dim=-1).reshape(env_embeds.shape[0], -1)
-    #     text_embeds = torch.nn.functional.normalize(text_embeds, dim=-1).reshape(text_embeds.shape[0], -1)
-    #     audio_embeds = torch.nn.functional.normalize(audio_embeds, dim=-1).reshape(audio_embeds.shape[0], -1)
-
-    #     sims = image_embeds @ text_embeds.t()
-    #     i2t = sum(torch.argmax(sims, dim=-1)==classes.to(self.device)) / sat_embeds.shape[0]
-
-    #     sims = sat_embeds @ loc_embeds.t()
-    #     s2l = sum(torch.argmax(sims, dim=-1)==torch.arange(sat_embeds.shape[0]).to(self.device)) / sat_embeds.shape[0]
-    #     l2s = sum(torch.argmax(sims.t(), dim=-1)==torch.arange(sat_embeds.shape[0]).to(self.device)) / sat_embeds.shape[0]
-
-    #     sims = sat_embeds @ audio_embeds.t()
-    #     s2a = sum(classes[torch.argmax(sims, dim=-1)]==classes.to(self.device)) / sat_embeds.shape[0]
-    #     a2s = sum(classes[torch.argmax(sims.t(), dim=-1)]==classes.to(self.device)) / sat_embeds.shape[0]
-
-    #     sims = sat_embeds @ env_embeds.t()
-    #     s2e = sum(classes[torch.argmax(sims, dim=-1)]==classes.to(self.device)) / sat_embeds.shape[0]
-    #     e2s = sum(classes[torch.argmax(sims.t(), dim=-1)]==classes.to(self.device)) / sat_embeds.shape[0]
-
-    #     recall = (i2t*2+s2l+l2s+s2a+a2s+s2e+e2s)/8
-
-    #     self.log('R_1', recall, sync_dist=True, prog_bar=True, on_epoch=True)
-
-    def train_dataloader(self):
-        return DataLoader(self.train_dataset,
-                          batch_size=self.batch_size,
-                          num_workers=8,
-                          shuffle=True,
-                          persistent_workers=False)
-
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset,
-                          batch_size=self.batch_size,
-                          num_workers=8,
-                          shuffle=False,
-                          persistent_workers=False)
 
     def configure_optimizers(self):
-        params = self.parameters()
-        self.optim = torch.optim.AdamW(params,
-                                       lr=self.lr,
-                                       betas=(0.9,0.98),
-                                       eps=1e-6
-                                    )
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer=self.optim,
-            T_0=20,
+        # We use AdamW as the default optimizer for transformer-based models
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(), 
+            lr=self.lr, 
+            betas=(0.9, 0.98), 
+            eps=1e-6
+        )
+        
+        # Cosine Annealing with Warm Restarts for robust convergence
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, 
+            T_0=self.hparams.scheduler_t0, 
             eta_min=1e-6
         )
-        return [self.optim], [self.scheduler]   
+        
+        return [optimizer], [scheduler]
 
-if __name__ == '__main__':
-    data_path = '../embeds/embeds_train_final.npy'
-    data_path_val = '../embeds/embeds_val.npy'
-    data_path_inat = '../embeds/embeds_inat.npy'
+def main():
+    parser = argparse.ArgumentParser(description="ProM3E: Training Script for GitHub Release")
+    
+    # Dataset Configuration
+    parser.add_argument("--train_taxabind", type=str, required=True, help="Path to Taxabind training features (.npy)")
+    parser.add_argument("--train_inat", type=str, required=True, help="Path to iNat training features (.npy)")
+    parser.add_argument("--val_taxabind", type=str, required=True, help="Path to Taxabind validation features (.npy)")
+    parser.add_argument("--val_inat", type=str, required=True, help="Path to iNat validation features (.npy)")
+    parser.add_argument("--inat_split_size", type=int, default=80000, help="Initial split index for iNat data")
+    
+    # Training Hyperparameters
+    parser.add_argument("--batch_size", type=int, default=1024, help="Internal sampling size (batch size per iteration)")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Peak learning rate for AdamW")
+    parser.add_argument("--max_epochs", type=int, default=500, help="Maximum training epochs")
+    parser.add_argument("--num_workers", type=int, default=8, help="DataLoader CPU workers")
+    parser.add_argument("--scheduler_t0", type=int, default=20, help="T_0 parameter for CosineAnnealingWarmRestarts")
+    
+    # Model Architecture
+    parser.add_argument("--input_dim", type=int, default=512, help="Feature dimension of each modality input")
+    parser.add_argument("--embed_dim", type=int, default=1024, help="Transformer latent dimension")
+    parser.add_argument("--depth", type=int, default=1, help="Number of transformer layers")
+    parser.add_argument("--heads", type=int, default=8, help="Number of multi-head attention heads")
+    parser.add_argument("--mlp_dim", type=int, default=2048, help="Transformer FFN hidden dimension")
+    parser.add_argument("--num_modalities", type=int, default=6)
+    parser.add_argument("--num_register_tokens", type=int, default=4)
+    parser.add_argument("--num_cls_tokens", type=int, default=2)
+    parser.add_argument("--masked_only", action="store_true", help="Toggle training on masked modalities only")
+    parser.add_argument("--dropout", type=float, default=0.0)
+    
+    # Logging and Checkpoints
+    parser.add_argument("--run_name", type=str, default="ProM3E_v1", help="Name for logging and filenames")
+    parser.add_argument("--ckpt_path", type=str, default="checkpoints", help="Folder to save model checkpoints")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    
+    args = parser.parse_args()
 
-    train_dataset = M3EDataset(data_path, data_path_inat, batch_size=1024, split='train')
-    val_dataset = M3EDataset(data_path_val, data_path_inat, batch_size=1024, split='val')
+    # Load Train/Val datasets
+    train_dataset = ProM3EDataset(
+        taxabind_path=args.train_taxabind,
+        inat_path=args.train_inat,
+        batch_size=args.batch_size,
+        split='train',
+        inat_split_size=args.inat_split_size
+    )
+    
+    val_dataset = ProM3EDataset(
+        taxabind_path=args.val_taxabind,
+        inat_path=args.val_inat,
+        batch_size=args.batch_size,
+        split='val',
+        inat_split_size=args.inat_split_size
+    )
 
-    print(len(train_dataset), len(val_dataset))
+    # Use batch_size=1 because ProM3EDataset returns a full chunk of size args.batch_size
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=1, 
+        num_workers=args.num_workers, 
+        shuffle=True, 
+        persistent_workers=False
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=1, 
+        num_workers=args.num_workers, 
+        shuffle=False, 
+        persistent_workers=False
+    )
 
-    #define model
-    model = M3ETrainingModule(train_dataset=train_dataset, val_dataset=val_dataset)
-    torch.cuda.empty_cache()
+    # Instantiate Training Module
+    training_module = ProM3ETrainingModule(**vars(args))
 
-    checkpoint = ModelCheckpoint(
+    # Setup Callbacks
+    checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
-        dirpath='checkpoints',
-        filename='m3e-prob-{epoch:02d}-{val_loss:.2f}',
+        dirpath=args.ckpt_path,
+        filename=f'prom3e-{args.run_name}' + '-{epoch:02d}-{val_loss:.4f}',
         save_last=True,
         mode='min'
     )
+    
+    logger = None
+    if args.wandb:
+        logger = WandbLogger(project="ProM3E", name=args.run_name)
+
+    # Training logic
     trainer = pl.Trainer(
         accelerator='gpu',
-        strategy='ddp_find_unused_parameters_true',
-        devices=1, 
-        max_epochs=800,
-        num_nodes=1,
-        callbacks=[checkpoint],
-        )
-    trainer.fit(model)
-    
+        devices=torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        max_epochs=args.max_epochs,
+        callbacks=[checkpoint_callback],
+        logger=logger,
+        strategy='ddp_find_unused_parameters_true' if torch.cuda.device_count() > 1 else 'auto'
+    )
+
+    print(f"Starting training for {args.run_name}...")
+    trainer.fit(training_module, train_loader, val_loader)
+
+if __name__ == "__main__":
+    main()
