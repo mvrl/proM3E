@@ -7,13 +7,13 @@
 [![Project Page](https://img.shields.io/badge/Project-Website-green)](https://vishu26.github.io/prom3e/index.html)
 [![Hugging Face Models](https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Models-yellow
 )](https://huggingface.co/MVRL/ProM3E)
-[![Hugging Face Models](https://img.shields.io/badge/ProM3E-Datasets-blue)]()</center>
+[![Hugging Face Datasets](https://img.shields.io/badge/ProM3E-Datasets-blue)](https://huggingface.co/datasets/MVRL/MultiNat)</center>
 
 [Srikumar Sastry*](https://vishu26.github.io/),
 [Subash Khanal](https://subash-khanal.github.io/),
 [Aayush Dhakal](https://scholar.google.com/citations?user=KawjT_8AAAAJ&hl=en),
 [Jiayu Lin](),
-[Dan Cher](),
+[Dan Cher](https://dcher95.github.io/),
 [Phoenix Jarosz](),
 [Nathan Jacobs](https://jacobsn.github.io/)
 (*Corresponding Author)
@@ -31,9 +31,18 @@ ProM3E is a probabilistic multimodal model that learns to predict missing modali
 ![](imgs/zero_shot.png)
 Our framework outperforms the state-of-the-art in both unimodal (BioCLIP, ArborCLIP, TaxaBind) and multimodal setting (ImageBind, TaxaBind).
 
+## 👫 Modality Gap
+![](imgs/modality_gap.png)
+Our training strategy effectively mitigates the modality gap between the encoders.
+
+## 📈 Data Scalability
+![](imgs/scaling.png)
+We show that our model can be trained with much less all paired dataset and the performance across various dataset sizes and tasks remain consistent. For instance training with 10% of the dataset (7,913 samples) only results in a performance drop of ∼3% on average.
+
+
 ## 🔥 Large Mulitmodal Ecological Datasets
 
-* We release [MultiNat](), a truly multimodal dataset containing six paired modalities for evaluating large ecological models.
+We release [MultiNat](https://huggingface.co/datasets/MVRL/MultiNat), a truly multimodal dataset containing six paired modalities for evaluating large ecological models.
 
 📑 Citation
 
