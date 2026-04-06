@@ -58,8 +58,8 @@ def run_habitat_classification(
         for batch in tqdm(loader):
             batch = batch.to(device)
             # Use Environment modality for habitat classification
-            _, mu, _ = model.forward_inference(batch, modality_mask=[3])
-            features.append(mu.cpu().numpy())
+            _, _, _, x = model.forward_inference(batch, modality_mask=[3])
+            features.append(x.cpu().numpy())
 
     X = np.concatenate(features, axis=0)
     y = labels

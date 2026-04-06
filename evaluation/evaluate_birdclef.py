@@ -85,8 +85,8 @@ def run_birdclef_evaluation(
         for (batch_x,) in tqdm(loader):
             batch_x = batch_x.to(device)
             # Inference using Audio (5) and Location (2)
-            _, mu, _ = model.forward_inference(batch_x, modality_mask=[2, 5])
-            out_features.append(mu.cpu().numpy())
+            _, _, _, x = model.forward_inference(batch_x, modality_mask=[2, 5])
+            out_features.append(x.cpu().numpy())
 
     X = np.concatenate(out_features, axis=0)
     y = labels

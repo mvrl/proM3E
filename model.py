@@ -65,7 +65,7 @@ class ProM3E(nn.Module, PyTorchModelHubMixin):
     def __init__(
         self,
         input_dim: int = 512,
-        embed_dim: int = 512,
+        embed_dim: int = 1024,
         num_modalities: int = 6,
         depth: int = 1,
         heads: int = 8,
@@ -238,14 +238,15 @@ class ProM3E(nn.Module, PyTorchModelHubMixin):
         # Stochastic averaging at inference
         latent_samples = []
         for _ in range(n_samples):
-            latent_samples.append(mu + std * torch.randn_like(mu))
+            #latent_samples.append(mu + std * torch.randn_like(mu))
+            latent_samples.append(mu + std * torch.randn(batch_size, device=device).unsqueeze(1))
         latent_mean = torch.stack(latent_samples).mean(dim=0)
         
         predictions = torch.zeros((batch_size, self.num_modalities, self.input_dim), device=device)
         for i in range(self.num_modalities):
             predictions[:, i] = self.decoders[i](latent_mean)
 
-        return F.normalize(predictions, dim=-1), mu, logvar
+        return F.normalize(predictions, dim=-1), mu, logvar, x
 
 def main():
     parser = argparse.ArgumentParser(description="ProM3E Model Release Script")
