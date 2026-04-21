@@ -75,7 +75,7 @@ We show that our model can be trained with much less all paired dataset and the 
 
 ## 🔥 Large Mulitmodal Ecological Datasets
 
-We release [MultiNat](https://huggingface.co/datasets/MVRL/MultiNat), a truly multimodal dataset containing six paired modalities for evaluating large ecological models.
+We release [MultiNat](https://huggingface.co/datasets/MVRL/MultiNat), a truly multimodal dataset containing six paired modalities for evaluating large ecological models. The precomputed embeddings are available as parquet. The raw observations can be downloaded using `train.csv`, `val.csv` and `test.csv`.
 
 📑 Citation
 
